@@ -1,0 +1,110 @@
+name: Drill
+
+# Manual only. The drill mutates two Dataverse environments -- it imports,
+# hand-edits and deletes a solution -- and nothing about that belongs on a
+# push trigger.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # the whole authentication model depends on this
+
+concurrency:
+  # One drill at a time. Two would share the same solution in the same target
+  # environment, and the second would grade its guards against the first one's
+  # half-finished state.
+  group: layer-drill
+  cancel-in-progress: false
+
+jobs:
+  drill:
+    name: Promote over an unmanaged layer and grade what landed
+    runs-on: ubuntu-latest
+    environment: lab
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # Federated, so the drill holds no secret. The same subject format as the
+      # sibling Azure DevOps lab: GitHub presents the IMMUTABLE form with
+      # numeric ids, Entra matches the subject as an exact string, and a
+      # credential registered for the portable repo:OWNER/REPO form is never
+      # matched. Composed here so the two cannot drift.
+      - name: Compose the OIDC subject
+        id: subject
+        run: |
+          name="${GITHUB_REPOSITORY#*/}"
+          echo "value=repo:${GITHUB_REPOSITORY_OWNER}@${{ github.repository_owner_id }}/${name}@${{ github.repository_id }}:environment:lab" >> "$GITHUB_OUTPUT"
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      # Fetched here rather than inside the drill so an authentication failure
+      # is reported as itself, before any environment is touched. A drill that
+      # started with a bad token would report every guard Unknown, which looks
+      # like a finding rather than a login problem.
+      - name: Get Dataverse tokens
+        id: tokens
+        run: |
+          for pair in "DEV:${{ vars.DATAVERSE_DEV_URL }}" "TARGET:${{ vars.DATAVERSE_TARGET_URL }}"; do
+            label="${pair%%:*}"
+            url="${pair#*:}"
+            token=$(az account get-access-token --resource "${url}/" --query accessToken -o tsv)
+            if [ -z "$token" ]; then
+              echo "::error::No Dataverse token for ${url}. Is the service principal an application user in that environment?"
+              exit 1
+            fi
+            echo "::add-mask::${token}"
+            echo "DATAVERSE_${label}_TOKEN=${token}" >> "$GITHUB_ENV"
+          done
+          echo "Tokens acquired for both environments."
+
+      - name: Drill
+        shell: pwsh
+        run: |
+          ./scripts/Invoke-LayerDrill.ps1 `
+            -DevUrl '${{ vars.DATAVERSE_DEV_URL }}' `
+            -TargetUrl '${{ vars.DATAVERSE_TARGET_URL }}'
+
+      - name: Summarise
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path layer-report.md) {
+            Get-Content layer-report.md | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          }
+
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: layer-report
+          path: layer-report.*
+          if-no-files-found: warn
+
+      # The environments are free and persistent by design, so there is no
+      # teardown to verify -- but the solution the drill imported is left in
+      # the target, and a stale one would make the next run's baseline import
+      # find the component already present. Removed explicitly.
+      - name: Remove the drill solution from the target
+        if: always()
+        shell: pwsh
+        run: |
+          $url = '${{ vars.DATAVERSE_TARGET_URL }}'.TrimEnd('/')
+          $headers = @{
+            Authorization      = "Bearer $env:DATAVERSE_TARGET_TOKEN"
+            'OData-MaxVersion' = '4.0'
+            'OData-Version'    = '4.0'
+            Accept             = 'application/json'
+          }
+          $found = Invoke-RestMethod -Method Get -Headers $headers `
+            -Uri "$url/api/data/v9.2/solutions?`$select=solutionid&`$filter=uniquename eq 'guardlayer'"
+          foreach ($row in @($found.value)) {
+            Invoke-RestMethod -Method Delete -Headers $headers -Uri "$url/api/data/v9.2/solutions($($row.solutionid))" | Out-Null
+            Write-Output "Removed guardlayer ($($row.solutionid)) from the target."
+          }
+          if (-not @($found.value).Count) { Write-Output 'No drill solution in the target.' }

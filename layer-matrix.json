@@ -1,0 +1,87 @@
+{
+  "version": 1,
+  "notes": [
+    "The yardstick, written before the drill runs.",
+    "",
+    "Two guards, graded twice: once with OverwriteUnmanagedCustomizations left at",
+    "its default of false, and once with it set to true. One guard behaves the",
+    "same in both passes and one does not, and the one that changes is the whole",
+    "finding.",
+    "",
+    "The assertions below are separate from the guards on purpose. They are not",
+    "outcomes of an import -- they are statements about what the OBSERVABLE",
+    "SIGNALS do while a component silently fails to update. Each one is a way",
+    "somebody would try to detect this and find nothing wrong."
+  ],
+
+  "outcomes": {
+    "Applied": "The target now serves the value the imported solution shipped.",
+    "Suppressed": "The import reported success and the target still serves the previous value. The change did not land.",
+    "Failed": "The import itself failed. A real error, and not what this lab is about.",
+    "Unknown": "Could not be determined. Always a failure, never a pass."
+  },
+
+  "passes": {
+    "default": {
+      "overwriteUnmanagedCustomizations": false,
+      "why": "The default, and what every import does unless somebody knew to change it."
+    },
+    "overwrite": {
+      "overwriteUnmanagedCustomizations": true,
+      "why": "The documented remediation. Included so the boundary is a measurement rather than advice."
+    }
+  },
+
+  "guards": [
+    {
+      "id": "baseline-import-applies",
+      "title": "A managed import lands when nothing local is in the way",
+      "expectDefault": "Applied",
+      "expectOverwrite": "Applied",
+      "severity": "Baseline",
+      "why": "The case everybody has watched work, and it is here so the next guard means something. Without observing an import that does land, a drill reporting Suppressed for everything -- which is what a broken value read looks like -- would pass the finding for free."
+    },
+    {
+      "id": "import-over-unmanaged-layer",
+      "title": "A managed import over a hand-edited component reports success and changes nothing",
+      "expectDefault": "Suppressed",
+      "expectOverwrite": "Applied",
+      "severity": "Critical",
+      "why": "The finding. Somebody edits a managed component directly in the target -- which is all it takes to create an unmanaged layer -- and every later import of that solution silently leaves it alone. The import succeeds, the solution version advances, and the component serves the hand edit forever. Setting OverwriteUnmanagedCustomizations makes the same import land, which is why this guard is graded in both passes: the difference between the two is a setting almost nobody changes."
+    }
+  ],
+
+  "assertions": [
+    {
+      "id": "import-reports-success",
+      "expect": true,
+      "severity": "Critical",
+      "why": "The import returns success in both passes. There is no error, no warning and no non-zero status to key an alert on, so a pipeline that checks whether the import succeeded learns nothing."
+    },
+    {
+      "id": "solution-version-advances",
+      "expect": true,
+      "severity": "Critical",
+      "why": "The target's solution version advances in both passes, including the one where the component did not change. This is the signal most teams actually check -- 'is the right version deployed?' -- and it answers yes while the component is stale. A green version is not evidence."
+    },
+    {
+      "id": "component-layers-table-is-empty",
+      "expect": true,
+      "severity": "Uncertain",
+      "why": "Declared because it is what was observed and NOT because it is understood. msdyn_componentlayers exists as an entity and returned zero rows with a demonstrable unmanaged layer present, which would mean the table you would query to find this problem is no help. That may be a query mistake, a component type it does not cover, or asynchronous population. The assertion is here so that if it ever starts returning rows, this lab fails and says so rather than continuing to repeat a claim that stopped being true."
+    }
+  ],
+
+  "component": {
+    "solutionUniqueName": "guardlayer",
+    "publisherUniqueName": "guardpub",
+    "webResourceName": "guard_config.txt",
+    "why": [
+      "A text web resource, because the mechanism is the same for a canvas app or",
+      "a flow and a web resource's content can be read back in one call and",
+      "compared exactly. The lab is about layers, not about the component type.",
+      "",
+      "Web resources are component type 61."
+    ]
+  }
+}

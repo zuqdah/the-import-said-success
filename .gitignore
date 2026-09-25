@@ -1,0 +1,5 @@
+# Drill output. Written per run, never committed: a report in the repository
+# would be read as the current state of an environment the drill mutates.
+layer-report.json
+layer-report.md
+testResults.xml
