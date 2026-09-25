@@ -133,6 +133,14 @@ dv() {
   # dv <url> <method> <path> [body]
   local url="$1" method="$2" path="$3" body="${4:-}"
   local token
+
+  # OData filters contain spaces -- applicationid eq <guid>, name eq 'System
+  # Administrator' -- and an unencoded space in a URL is rejected outright by
+  # curl on Windows with "Malformed input to a URL function", which reads like a
+  # problem with the address rather than with one character in the query.
+  # Encoded here rather than at each call site so a new query cannot reintroduce
+  # it.
+  path="${path// /%20}"
   token=$(az account get-access-token --resource "${url}/" --query accessToken -o tsv)
   if [ -n "$body" ]; then
     curl -sS -X "$method" "${url}/api/data/v9.2/${path}" \
